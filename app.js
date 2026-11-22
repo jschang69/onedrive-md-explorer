@@ -1,18 +1,40 @@
 'use strict';
 const $=id=>document.getElementById(id), API='https://graph.microsoft.com/v1.0';
 const state={msal:null,account:null,folder:null,trail:[],items:[],selected:new Map(),busy:false};
+const START_PATH=['메일보고서_배포_20261030','메일보고서','AI보고서'];
 const redirect=location.origin+location.pathname; $('redirect').textContent=redirect;
 $('clientId').value=localStorage.getItem('odme_client_id')||'';
 function status(s){$('status').textContent=s}
 function controls(){const on=!!state.account;for(const id of ['root','query','search','selectAll','clear'])$(id).disabled=!on; $('back').disabled=!on||!state.trail.length;$('login').hidden=on;$('logout').hidden=!on;$('account').textContent=on?(state.account.username||'연결됨'):'연결 안 됨';$('count').textContent=state.selected.size;for(const id of ['share','download','chatgpt'])$(id).disabled=!state.selected.size||state.busy;}
-async function init(){const clientId=$('clientId').value.trim();if(!/^[0-9a-f-]{36}$/i.test(clientId))return status('유효한 Client ID를 입력하세요.');if(!window.msal)return status('인증 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요.');state.msal=new msal.PublicClientApplication({auth:{clientId,authority:'https://login.microsoftonline.com/consumers',redirectUri:redirect},cache:{cacheLocation:'localStorage'}});await state.msal.initialize();await state.msal.handleRedirectPromise();state.account=state.msal.getAllAccounts()[0]||null;controls();if(state.account){$('setup').hidden=true;await loadFolder(null)}else $('setup').hidden=false;}
+async function init(){const clientId=$('clientId').value.trim();if(!/^[0-9a-f-]{36}$/i.test(clientId))return status('유효한 Client ID를 입력하세요.');if(!window.msal)return status('인증 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요.');state.msal=new msal.PublicClientApplication({auth:{clientId,authority:'https://login.microsoftonline.com/consumers',redirectUri:redirect},cache:{cacheLocation:'localStorage'}});await state.msal.initialize();await state.msal.handleRedirectPromise();state.account=state.msal.getAllAccounts()[0]||null;controls();if(state.account){$('setup').hidden=true;await loadStartFolder()}else $('setup').hidden=false;}
 $('saveConfig').onclick=async()=>{localStorage.setItem('odme_client_id',$('clientId').value.trim());try{await init()}catch(e){status('설정 오류: '+e.message)}};
-$('login').onclick=async()=>{try{if(!state.msal)await init();if(!state.msal)return;const result=await state.msal.loginPopup({scopes:['Files.Read','User.Read'],prompt:'select_account'});state.account=result.account;controls();$('setup').hidden=true;await loadFolder(null)}catch(e){status('로그인 오류: '+e.message+' (팝업 차단 시 허용해 주세요.)')}};
+$('login').onclick=async()=>{try{if(!state.msal)await init();if(!state.msal)return;const result=await state.msal.loginPopup({scopes:['Files.Read','User.Read'],prompt:'select_account'});state.account=result.account;controls();$('setup').hidden=true;await loadStartFolder()}catch(e){status('로그인 오류: '+e.message+' (팝업 차단 시 허용해 주세요.)')}};
 $('logout').onclick=async()=>{try{await state.msal.logoutPopup({account:state.account,postLogoutRedirectUri:redirect})}catch(e){status('로그아웃 확인: '+e.message)}state.account=null;state.items=[];state.selected.clear();$('files').replaceChildren();$('setup').hidden=false;controls()};
 async function token(){if(!state.account)throw Error('먼저 로그인하세요.');try{return (await state.msal.acquireTokenSilent({account:state.account,scopes:['Files.Read','User.Read']})).accessToken}catch(e){const r=await state.msal.acquireTokenPopup({scopes:['Files.Read','User.Read']});return r.accessToken}}
 async function graph(url){const t=await token();const r=await fetch(url.startsWith('https://')?url:API+url,{headers:{Authorization:'Bearer '+t}});if(!r.ok)throw Error('OneDrive API '+r.status+': '+(await r.text()).slice(0,180));return r.json()}
 async function allPages(url){const out=[];while(url){const data=await graph(url);out.push(...(data.value||[]));url=data['@odata.nextLink']||null;if(out.length>30000)throw Error('파일이 너무 많습니다. 폴더 범위를 줄여주세요.')}return out}
 const childUrl=id=>id?`/me/drive/items/${encodeURIComponent(id)}/children?$top=200&$select=id,name,size,file,folder,parentReference`:'/me/drive/root/children?$top=200&$select=id,name,size,file,folder,parentReference';
+async function loadStartFolder(){
+  // Resolve each folder by name, retaining the trail for Back navigation.
+  // If any component is absent, fall back to the OneDrive root.
+  try{
+    const trail=[];
+    let parentId=null;
+    for(const name of START_PATH){
+      const entries=await allPages(childUrl(parentId));
+      const folder=entries.find(item=>item.folder&&item.name===name);
+      if(!folder)throw Error('시작 폴더를 찾을 수 없습니다: '+name);
+      trail.push(folder);
+      parentId=folder.id;
+    }
+    state.trail=trail;
+    await loadFolder(trail[trail.length-1]);
+  }catch(e){
+    state.trail=[];
+    await loadFolder(null);
+    status('시작 폴더 자동 이동 실패 ('+e.message+'). OneDrive 전체 폴더를 표시합니다.');
+  }
+}
 async function loadFolder(folder){try{state.folder=folder;state.items=await allPages(childUrl(folder?.id));$('path').textContent='OneDrive / '+state.trail.map(x=>x.name).join(' / ');render();status(`${state.items.length}개 항목을 불러왔습니다.`);controls()}catch(e){status('폴더 오류: '+e.message)}}
 $('root').onclick=()=>{state.trail=[];loadFolder(null)};$('back').onclick=()=>{state.trail.pop();loadFolder(state.trail.at(-1)||null)};
 function render(){const box=$('files');box.replaceChildren();for(const item of state.items){if(!item.folder&&!item.name.toLowerCase().endsWith('.md'))continue;const line=document.createElement('div');line.className='file';if(item.folder){const b=document.createElement('button');b.textContent='📁 '+item.name;b.onclick=()=>{state.trail.push(item);loadFolder(item)};line.append(b)}else{const cb=document.createElement('input');cb.type='checkbox';cb.checked=state.selected.has(item.id);cb.onchange=()=>{if(cb.checked)state.selected.set(item.id,item);else state.selected.delete(item.id);controls()};const name=document.createElement('div');name.className='name';name.textContent='📄 '+item.name;const view=document.createElement('button');view.textContent='보기';view.onclick=()=>preview(item);line.append(cb,name,view)}box.append(line)}if(!box.children.length)box.textContent='해당하는 Markdown 파일이 없습니다.'}
