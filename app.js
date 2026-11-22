@@ -4,8 +4,7 @@ const state={msal:null,account:null,folder:null,trail:[],items:[],selected:new M
 const redirect=location.origin+location.pathname; $('redirect').textContent=redirect;
 $('clientId').value=localStorage.getItem('odme_client_id')||'';
 function status(s){$('status').textContent=s}
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function controls(){const on=!!state.account;for(const id of ['root','query','search','selectAll','clear'])$(id).disabled=!on; $('back').disabled=!on||!state.trail.length;$('login').hidden=on;$('logout').hidden=!on;$('account').textContent=on?(state.account.username||'연결됨'):'연결 안 됨';$('count').textContent=state.selected.size;for(const id of ['share','download'])$(id).disabled=!state.selected.size||state.busy;}
+function controls(){const on=!!state.account;for(const id of ['root','query','search','selectAll','clear'])$(id).disabled=!on; $('back').disabled=!on||!state.trail.length;$('login').hidden=on;$('logout').hidden=!on;$('account').textContent=on?(state.account.username||'연결됨'):'연결 안 됨';$('count').textContent=state.selected.size;for(const id of ['share','download','chatgpt'])$(id).disabled=!state.selected.size||state.busy;}
 async function init(){const clientId=$('clientId').value.trim();if(!/^[0-9a-f-]{36}$/i.test(clientId))return status('유효한 Client ID를 입력하세요.');if(!window.msal)return status('인증 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요.');state.msal=new msal.PublicClientApplication({auth:{clientId,authority:'https://login.microsoftonline.com/consumers',redirectUri:redirect},cache:{cacheLocation:'localStorage'}});await state.msal.initialize();await state.msal.handleRedirectPromise();state.account=state.msal.getAllAccounts()[0]||null;controls();if(state.account){$('setup').hidden=true;await loadFolder(null)}else $('setup').hidden=false;}
 $('saveConfig').onclick=async()=>{localStorage.setItem('odme_client_id',$('clientId').value.trim());try{await init()}catch(e){status('설정 오류: '+e.message)}};
 $('login').onclick=async()=>{try{if(!state.msal)await init();if(!state.msal)return;const result=await state.msal.loginPopup({scopes:['Files.Read','User.Read'],prompt:'select_account'});state.account=result.account;controls();$('setup').hidden=true;await loadFolder(null)}catch(e){status('로그인 오류: '+e.message+' (팝업 차단 시 허용해 주세요.)')}};
@@ -23,7 +22,27 @@ async function crawl(folderId,results,depth=0){if(depth>30)throw Error('폴더 �
 $('search').onclick=async()=>{const q=$('query').value.trim().toLowerCase(),body=$('bodySearch').checked;state.busy=true;controls();status('하위 폴더를 검색하는 중입니다...');try{const all=[];await crawl(state.folder?.id,all);const result=[];for(let i=0;i<all.length;i++){const f=all[i];if(f.name.toLowerCase().includes(q)){result.push(f);continue}if(q&&body){try{const raw=await(await content(f)).text();if(raw.toLowerCase().includes(q))result.push(f)}catch(e){/* Skip unreadable file */}}if(i%10===0)status(`검색 중 ${i+1}/${all.length}...`)}state.items=result;render();status(`${all.length}개 MD 파일 중 ${result.length}개 검색됨`)}catch(e){status('검색 오류: '+e.message)}finally{state.busy=false;controls()}};
 $('selectAll').onclick=()=>{for(const f of state.items)if(!f.folder)state.selected.set(f.id,f);render();controls()};$('clear').onclick=()=>{state.selected.clear();render();controls()};
 async function prepared(){const files=[];for(const f of state.selected.values()){const b=await content(f);files.push(new File([b],f.name,{type:'text/markdown'}))}return files}
-async function action(kind){state.busy=true;controls();try{status('선택한 파일을 준비하고 있습니다...');const files=await prepared();if(kind==='share'&&navigator.share&&navigator.canShare?.({files})){await navigator.share({files,title:'Markdown 파일'});status('공유 메뉴를 열었습니다. ChatGPT의 실제 첨부 여부를 확인하세요.');return}if(kind==='share')status('이 브라우저에서는 다중 파일 직접 공유가 지원되지 않습니다. 다운로드를 사용하세요.');else{for(const file of files){const url=URL.createObjectURL(file),a=document.createElement('a');a.href=url;a.download=file.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)}status(`${files.length}개 파일 다운로드를 요청했습니다. 브라우저가 여러 다운로드를 차단하면 허용해 주세요.`)}}catch(e){if(e.name!=='AbortError')status('작업 오류: '+e.message)}finally{state.busy=false;controls()}}
-$('share').onclick=()=>action('share');$('download').onclick=()=>action('download');$('chatgpt').onclick=()=>window.open('https://chatgpt.com/','_blank','noopener');
+function downloadFiles(files){for(const file of files){const url=URL.createObjectURL(file),a=document.createElement('a');a.href=url;a.download=file.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)}}
+async function action(kind){state.busy=true;controls();try{status('선택한 파일을 준비하고 있습니다...');const files=await prepared();if(kind==='share'&&navigator.share&&navigator.canShare?.({files})){await navigator.share({files,title:'Markdown 파일'});status('공유 메뉴를 열었습니다. ChatGPT의 실제 첨부 여부를 확인하세요.');return}if(kind==='share'){status('이 브라우저에서는 다중 파일 직접 공유가 지원되지 않습니다. 다운로드 버튼을 사용하세요.');return}downloadFiles(files);status(`${files.length}개 파일 다운로드를 요청했습니다. 브라우저가 여러 다운로드를 차단하면 허용해 주세요.`)}catch(e){if(e.name!=='AbortError')status('작업 오류: '+e.message)}finally{state.busy=false;controls()}}
+$('share').onclick=()=>action('share');$('download').onclick=()=>action('download');
+// Open the ChatGPT tab synchronously within the click handler so popup blockers
+// do not block it after the asynchronous OneDrive downloads complete.
+$('chatgpt').onclick=async()=>{
+  if(!state.selected.size||state.busy)return;
+  const tab=window.open('about:blank','_blank');
+  if(tab){tab.document.title='ChatGPT 열기 준비 중';tab.document.body.textContent='선택한 파일을 다운로드한 뒤 ChatGPT를 엽니다...';}
+  state.busy=true;controls();
+  try{
+    status('선택한 MD 파일을 다운로드 준비 중입니다...');
+    const files=await prepared();
+    downloadFiles(files);
+    status(`${files.length}개 MD 파일 다운로드를 요청했습니다. ChatGPT에서 파일을 직접 첨부하세요. 여러 다운로드 허용이 필요할 수 있습니다.`);
+  }catch(e){status('다운로드 오류: '+e.message)}
+  finally{
+    state.busy=false;controls();
+    if(tab&&!tab.closed)tab.location.replace('https://chatgpt.com/');
+    else status($('status').textContent+' 팝업이 차단되었습니다. 브라우저에서 팝업을 허용한 후 다시 시도하세요.');
+  }
+};
 if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
 if($('clientId').value)init().catch(e=>status('초기화 오류: '+e.message));else status('최초 설정에서 Client ID를 입력하세요.');
